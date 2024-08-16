@@ -10,6 +10,7 @@ use crate::{
 };
 
 use alloy::{network::Network, providers::Provider, transports::Transport};
+use checkpoint::sync_amms_from_checkpoint;
 
 use std::{panic::resume_unwind, sync::Arc};
 
@@ -34,6 +35,14 @@ where
     tracing::info!(?step, ?factories, "Syncing AMMs");
 
     let current_block = provider.get_block_number().await?;
+
+    // read checkpoint file if exists
+    if let Some(checkpoint_path) = checkpoint_path {
+        if std::fs::File::open(checkpoint_path).is_ok() {
+            let (_, amms) = sync_amms_from_checkpoint(checkpoint_path, step, provider).await?;
+            return Ok((amms, current_block));
+        }
+    }
 
     // Aggregate the populated pools from each thread
     let mut aggregated_amms: Vec<AMM> = vec![];
