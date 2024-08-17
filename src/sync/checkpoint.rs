@@ -122,7 +122,7 @@ where
     // }
 
     // Sync all pools from the since synced block
-    let _permit = TASK_PERMITS.acquire().await.unwrap();
+    // let permit = TASK_PERMITS.acquire().await.unwrap();
     aggregated_amms.extend(
         get_new_amms_from_range(
             factories,
@@ -176,7 +176,7 @@ where
     tracing::info!("Getting new AMMs from range {} to {}", from_block, to_block);
     for factory in factories {
         let provider = provider.clone();
-
+        let permit = TASK_PERMITS.acquire().await.unwrap();
         // Spawn a new thread to get all pools and sync data for each dex
         join_set.spawn(async move {
             let mut amms = factory
@@ -189,7 +189,7 @@ where
 
             // Clean empty pools
             amms = filters::filter_empty_amms(amms);
-
+            drop(permit);
             Ok::<_, AMMError>(amms)
         });
     }
@@ -233,8 +233,8 @@ where
 
     for mut amm in amms {
         let middleware = provider.clone();
+        let permit = TASK_PERMITS.acquire().await.unwrap();
         join_set.spawn(async move {
-            let _permit = TASK_PERMITS.acquire().await.unwrap();
             match amm {
                 AMM::UniswapV2Pool(ref mut pool) => {
                     (pool.reserve_0, pool.reserve_1) =
@@ -251,7 +251,7 @@ where
                         vault.get_reserves(middleware, Some(to_block)).await?;
                 }
             }
-
+            drop(permit);
             Ok::<AMM, AMMError>(amm)
         });
     }
