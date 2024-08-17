@@ -56,7 +56,7 @@ where
         handles.push(tokio::spawn(async move {
             tracing::info!(?factory, "Getting all AMMs from factory");
             // Get all of the amms from the factory
-            let mut amms = factory
+            let mut amms: Vec<AMM> = factory
                 .get_all_amms(Some(current_block), provider.clone(), step)
                 .await?;
 

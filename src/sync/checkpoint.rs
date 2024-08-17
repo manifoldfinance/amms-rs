@@ -26,7 +26,7 @@ use crate::{
     filters, finish_progress, init_progress, update_progress_by_one,
 };
 
-static TASK_PERMITS: Semaphore = Semaphore::const_new(100);
+static TASK_PERMITS: Semaphore = Semaphore::const_new(20);
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Checkpoint {
@@ -71,6 +71,8 @@ where
         serde_json::from_str(read_to_string(&path_to_checkpoint)?.as_str())?;
 
     //
+    tracing::info!("Checkpoint blocknumber: {:?}", checkpoint.block_number);
+    tracing::info!("Current blocknumber: {:?}", current_block);
 
     let mut aggregated_amms = sync_amm_data_from_checkpoint(
         checkpoint.amms,
@@ -123,7 +125,7 @@ where
     let _permit = TASK_PERMITS.acquire().await.unwrap();
     aggregated_amms.extend(
         get_new_amms_from_range(
-            checkpoint.factories.clone(),
+            factories,
             checkpoint.block_number,
             current_block,
             step,
