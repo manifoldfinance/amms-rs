@@ -34,7 +34,7 @@ async fn main() -> eyre::Result<()> {
         // Add UniswapV3
         Factory::UniswapV3Factory(UniswapV3Factory::new(
             address!("1F98431c8aD98523631AE4a59f267346ea31F984"),
-            185,
+            12369621,
         )),
     ];
 

@@ -74,7 +74,7 @@ impl AutomatedMarketMaker for ERC4626Vault {
         N: Network,
         P: Provider<T, N>,
     {
-        let (vault_reserve, asset_reserve) = self.get_reserves(provider).await?;
+        let (vault_reserve, asset_reserve) = self.get_reserves(provider, None).await?;
         tracing::debug!(vault_reserve = ?vault_reserve, asset_reserve = ?asset_reserve, address = ?self.vault_token, "ER4626 sync");
 
         self.vault_reserve = vault_reserve;
@@ -229,7 +229,11 @@ impl ERC4626Vault {
             || self.asset_reserve.is_zero())
     }
 
-    pub async fn get_reserves<T, N, P>(&self, provider: Arc<P>) -> Result<(U256, U256), AMMError>
+    pub async fn get_reserves<T, N, P>(
+        &self,
+        provider: Arc<P>,
+        block: Option<u64>,
+    ) -> Result<(U256, U256), AMMError>
     where
         T: Transport + Clone,
         N: Network,
@@ -238,21 +242,39 @@ impl ERC4626Vault {
         // Initialize a new instance of the vault
         let vault = IERC4626Vault::new(self.vault_token, provider);
 
-        // Get the total assets in the vault
-        let IERC4626Vault::totalAssetsReturn { _0: total_assets } =
-            match vault.totalAssets().call().await {
-                Ok(total_assets) => total_assets,
-                Err(e) => return Err(AMMError::ContractError(e)),
-            };
+        if let Some(block) = block {
+            // Get the total assets in the vault
+            let IERC4626Vault::totalAssetsReturn { _0: total_assets } =
+                match vault.totalAssets().block(block.into()).call().await {
+                    Ok(total_assets) => total_assets,
+                    Err(e) => return Err(AMMError::ContractError(e)),
+                };
 
-        // Get the total supply of the vault token
-        let IERC4626Vault::totalSupplyReturn { _0: total_supply } =
-            match vault.totalSupply().call().await {
-                Ok(total_supply) => total_supply,
-                Err(e) => return Err(AMMError::ContractError(e)),
-            };
+            // Get the total supply of the vault token
+            let IERC4626Vault::totalSupplyReturn { _0: total_supply } =
+                match vault.totalSupply().block(block.into()).call().await {
+                    Ok(total_supply) => total_supply,
+                    Err(e) => return Err(AMMError::ContractError(e)),
+                };
 
-        Ok((total_supply, total_assets))
+            Ok((total_supply, total_assets))
+        } else {
+            // Get the total assets in the vault
+            let IERC4626Vault::totalAssetsReturn { _0: total_assets } =
+                match vault.totalAssets().call().await {
+                    Ok(total_assets) => total_assets,
+                    Err(e) => return Err(AMMError::ContractError(e)),
+                };
+
+            // Get the total supply of the vault token
+            let IERC4626Vault::totalSupplyReturn { _0: total_supply } =
+                match vault.totalSupply().call().await {
+                    Ok(total_supply) => total_supply,
+                    Err(e) => return Err(AMMError::ContractError(e)),
+                };
+
+            Ok((total_supply, total_assets))
+        }
     }
 
     pub fn calculate_price_64_x_64(&self, base_token: Address) -> Result<u128, ArithmeticError> {

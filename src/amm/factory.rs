@@ -10,9 +10,13 @@ use alloy::{
 };
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
+use indicatif::MultiProgress;
 use serde::{Deserialize, Serialize};
 
-use crate::errors::{AMMError, EventLogError};
+use crate::{
+    errors::{AMMError, EventLogError},
+    finish_progress, init_progress, update_progress_by_one,
+};
 
 use super::{
     uniswap_v2::factory::{IUniswapV2Factory, UniswapV2Factory},
@@ -177,6 +181,12 @@ impl Factory {
         let mut futures = FuturesUnordered::new();
 
         let mut aggregated_amms: Vec<AMM> = vec![];
+        let multi_progress = MultiProgress::new();
+        let progress = multi_progress.add(init_progress!(
+            (to_block - from_block) / step,
+            "Getting All AMMs from Factories"
+        ));
+        progress.set_position(0);
 
         while from_block < to_block {
             let provider = provider.clone();
@@ -197,12 +207,14 @@ impl Factory {
         }
 
         while let Some(result) = futures.next().await {
+            update_progress_by_one!(progress);
             let logs = result.map_err(AMMError::TransportError)?;
 
             for log in logs {
                 aggregated_amms.push(self.new_empty_amm_from_log(log).unwrap());
             }
         }
+        finish_progress!(progress);
 
         Ok(aggregated_amms)
     }

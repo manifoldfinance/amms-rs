@@ -20,6 +20,7 @@ artemis-core = { git = "https://github.com/paradigmxyz/artemis.git", branch = "m
 async-trait = "0.1"
 eyre = "0.6"
 futures = "0.3"
+indicatif = "0.17.8"
 lazy_static = "1.5"
 num-bigfloat = "1.7"
 regex = "1.10"

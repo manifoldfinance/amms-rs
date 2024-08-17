@@ -14,15 +14,20 @@ use alloy::{
 };
 use async_trait::async_trait;
 use futures::{stream::FuturesOrdered, StreamExt};
+use indicatif::MultiProgress;
 use serde::{Deserialize, Serialize};
+use tokio::{sync::Semaphore, task::JoinSet};
 use tracing::instrument;
 
 use crate::{
     amm::{factory::AutomatedMarketMakerFactory, AutomatedMarketMaker, AMM},
     errors::{AMMError, EventLogError},
+    finish_progress, init_progress, update_progress_by_one,
 };
 
 use super::{batch_request, IUniswapV3Pool, UniswapV3Pool};
+
+static TASK_PERMITS: Semaphore = Semaphore::const_new(200);
 
 sol! {
     /// Interface of the UniswapV3Factory contract
@@ -106,7 +111,13 @@ impl AutomatedMarketMakerFactory for UniswapV3Factory {
         if let Some(block_number) = block_number {
             // Max batch size for call
             let step = 76;
-            for amm_chunk in amms.chunks_mut(step) {
+            let amm_chunks = amms.chunks_mut(step);
+            let multi_progress = MultiProgress::new();
+            let progress =
+                multi_progress.add(init_progress!(amm_chunks.len(), "Populating AMM data v3"));
+            progress.set_position(0);
+            for amm_chunk in amm_chunks {
+                update_progress_by_one!(progress);
                 batch_request::get_amm_data_batch_request(
                     amm_chunk,
                     block_number,
@@ -114,6 +125,7 @@ impl AutomatedMarketMakerFactory for UniswapV3Factory {
                 )
                 .await?;
             }
+            finish_progress!(progress);
         } else {
             return Err(AMMError::BlockNumberNotFound);
         }

@@ -1,17 +1,17 @@
 pub mod checkpoint;
 
+use crate::update_progress_by_one;
 use crate::{
     amm::{
         factory::{AutomatedMarketMakerFactory, Factory},
         uniswap_v2, uniswap_v3, AutomatedMarketMaker, AMM,
     },
     errors::AMMError,
-    filters,
+    filters, finish_progress, init_progress,
+    sync::checkpoint::sync_amms_from_checkpoint,
 };
-
 use alloy::{network::Network, providers::Provider, transports::Transport};
-use checkpoint::sync_amms_from_checkpoint;
-
+use indicatif::MultiProgress;
 use std::{panic::resume_unwind, sync::Arc};
 
 /// Syncs all AMMs from the supplied factories.
@@ -131,23 +131,35 @@ where
     P: Provider<T, N>,
 {
     if amms_are_congruent(amms) {
+        let multi_progress = MultiProgress::new();
         match amms[0] {
             AMM::UniswapV2Pool(_) => {
                 // Max batch size for call
                 let step = 127;
-                for amm_chunk in amms.chunks_mut(step) {
+                let amm_chunks = amms.chunks_mut(step);
+                let progress =
+                    multi_progress.add(init_progress!(amm_chunks.len(), "Populating AMM data v2"));
+                progress.set_position(0);
+                for amm_chunk in amm_chunks {
+                    update_progress_by_one!(progress);
                     uniswap_v2::batch_request::get_amm_data_batch_request(
                         amm_chunk,
                         provider.clone(),
                     )
                     .await?;
                 }
+                finish_progress!(progress);
             }
 
             AMM::UniswapV3Pool(_) => {
                 // Max batch size for call
                 let step = 76;
-                for amm_chunk in amms.chunks_mut(step) {
+                let amm_chunks = amms.chunks_mut(step);
+                let progress =
+                    multi_progress.add(init_progress!(amm_chunks.len(), "Populating AMM data v3"));
+                progress.set_position(0);
+                for amm_chunk in amm_chunks {
+                    update_progress_by_one!(progress);
                     uniswap_v3::batch_request::get_amm_data_batch_request(
                         amm_chunk,
                         block_number,
@@ -155,13 +167,19 @@ where
                     )
                     .await?;
                 }
+                finish_progress!(progress);
             }
 
             // TODO: Implement batch request
             AMM::ERC4626Vault(_) => {
+                let progress =
+                    multi_progress.add(init_progress!(amms.len(), "Populating ERC4626 vaults"));
+                progress.set_position(0);
                 for amm in amms {
+                    update_progress_by_one!(progress);
                     amm.populate_data(None, provider.clone()).await?;
                 }
+                finish_progress!(progress);
             }
         }
     } else {

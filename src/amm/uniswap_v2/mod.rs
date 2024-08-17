@@ -61,7 +61,7 @@ impl AutomatedMarketMaker for UniswapV2Pool {
         N: Network,
         P: Provider<T, N>,
     {
-        let (reserve_0, reserve_1) = self.get_reserves(provider.clone()).await?;
+        let (reserve_0, reserve_1) = self.get_reserves(provider.clone(), None).await?;
         tracing::info!(?reserve_0, ?reserve_1, address = ?self.address, "UniswapV2 sync");
 
         self.reserve_0 = reserve_0;
@@ -303,7 +303,11 @@ impl UniswapV2Pool {
     }
 
     /// Returns the reserves of the pool.
-    pub async fn get_reserves<T, N, P>(&self, provider: Arc<P>) -> Result<(u128, u128), AMMError>
+    pub async fn get_reserves<T, N, P>(
+        &self,
+        provider: Arc<P>,
+        block: Option<u64>,
+    ) -> Result<(u128, u128), AMMError>
     where
         T: Transport + Clone,
         N: Network,
@@ -315,18 +319,33 @@ impl UniswapV2Pool {
         let v2_pair = IUniswapV2Pair::new(self.address, provider);
 
         // Make a call to get the reserves
-        let IUniswapV2Pair::getReservesReturn {
-            reserve0: reserve_0,
-            reserve1: reserve_1,
-            ..
-        } = match v2_pair.getReserves().call().await {
-            Ok(result) => result,
-            Err(contract_error) => return Err(AMMError::ContractError(contract_error)),
-        };
+        if let Some(block) = block {
+            let IUniswapV2Pair::getReservesReturn {
+                reserve0: reserve_0,
+                reserve1: reserve_1,
+                ..
+            } = match v2_pair.getReserves().block(block.into()).call().await {
+                Ok(result) => result,
+                Err(contract_error) => return Err(AMMError::ContractError(contract_error)),
+            };
 
-        tracing::trace!(reserve_0, reserve_1);
+            tracing::trace!(reserve_0, reserve_1);
 
-        Ok((reserve_0, reserve_1))
+            Ok((reserve_0, reserve_1))
+        } else {
+            let IUniswapV2Pair::getReservesReturn {
+                reserve0: reserve_0,
+                reserve1: reserve_1,
+                ..
+            } = match v2_pair.getReserves().call().await {
+                Ok(result) => result,
+                Err(contract_error) => return Err(AMMError::ContractError(contract_error)),
+            };
+
+            tracing::trace!(reserve_0, reserve_1);
+
+            Ok((reserve_0, reserve_1))
+        }
     }
 
     pub async fn get_token_decimals<T, N, P>(

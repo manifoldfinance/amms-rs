@@ -8,9 +8,12 @@ use std::{
 
 use alloy::{network::Network, primitives::Address, providers::Provider, transports::Transport};
 
+use indicatif::MultiProgress;
 use serde::{Deserialize, Serialize};
-
-use tokio::task::JoinHandle;
+use tokio::{
+    sync::Semaphore,
+    task::{JoinHandle, JoinSet},
+};
 
 use crate::{
     amm::{
@@ -20,10 +23,10 @@ use crate::{
         AMM,
     },
     errors::{AMMError, CheckpointError},
-    filters,
+    filters, finish_progress, init_progress, update_progress_by_one,
 };
 
-use super::amms_are_congruent;
+static TASK_PERMITS: Semaphore = Semaphore::const_new(100);
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Checkpoint {
@@ -61,51 +64,64 @@ where
     P: Provider<T, N> + 'static,
     A: AsRef<Path>,
 {
+    tracing::info!("Syncing AMMs from checkpoint");
     let current_block = provider.get_block_number().await?;
 
     let checkpoint: Checkpoint =
         serde_json::from_str(read_to_string(&path_to_checkpoint)?.as_str())?;
 
-    // Sort all of the pools from the checkpoint into uniswap_v2_pools and uniswap_v3_pools pools so we can sync them concurrently
-    let (uniswap_v2_pools, uniswap_v3_pools, erc_4626_pools) = sort_amms(checkpoint.amms);
+    //
 
-    let mut aggregated_amms = vec![];
-    let mut handles = vec![];
+    let mut aggregated_amms = sync_amm_data_from_checkpoint(
+        checkpoint.amms,
+        checkpoint.block_number,
+        current_block,
+        provider.clone(),
+    )
+    .await?;
+    let factories = checkpoint.factories.clone();
 
-    // Sync all uniswap v2 pools from checkpoint
-    if !uniswap_v2_pools.is_empty() {
-        handles.push(
-            batch_sync_amms_from_checkpoint(
-                uniswap_v2_pools,
-                Some(current_block),
-                provider.clone(),
-            )
-            .await,
-        );
-    }
+    // // Sort all of the pools from the checkpoint into uniswap_v2_pools and uniswap_v3_pools pools so we can sync them concurrently
+    // let (uniswap_v2_pools, uniswap_v3_pools, erc_4626_pools) = sort_amms(checkpoint.amms);
 
-    // Sync all uniswap v3 pools from checkpoint
-    if !uniswap_v3_pools.is_empty() {
-        handles.push(
-            batch_sync_amms_from_checkpoint(
-                uniswap_v3_pools,
-                Some(current_block),
-                provider.clone(),
-            )
-            .await,
-        );
-    }
+    // let mut aggregated_amms = vec![];
+    // let mut handles = vec![];
 
-    if !erc_4626_pools.is_empty() {
-        // TODO: Batch sync erc4626 pools from checkpoint
-        todo!(
-            r#"""This function will produce an incorrect state if ERC4626 pools are present in the checkpoint. 
-            This logic needs to be implemented into batch_sync_amms_from_checkpoint"""#
-        );
-    }
+    // // Sync all uniswap v2 pools from checkpoint
+    // if !uniswap_v2_pools.is_empty() {
+    //     handles.push(
+    //         batch_sync_amms_from_checkpoint(
+    //             uniswap_v2_pools,
+    //             Some(current_block),
+    //             provider.clone(),
+    //         )
+    //         .await,
+    //     );
+    // }
+
+    // // Sync all uniswap v3 pools from checkpoint
+    // if !uniswap_v3_pools.is_empty() {
+    //     handles.push(
+    //         batch_sync_amms_from_checkpoint(
+    //             uniswap_v3_pools,
+    //             Some(current_block),
+    //             provider.clone(),
+    //         )
+    //         .await,
+    //     );
+    // }
+
+    // if !erc_4626_pools.is_empty() {
+    //     // TODO: Batch sync erc4626 pools from checkpoint
+    //     todo!(
+    //         r#"""This function will produce an incorrect state if ERC4626 pools are present in the checkpoint.
+    //         This logic needs to be implemented into batch_sync_amms_from_checkpoint"""#
+    //     );
+    // }
 
     // Sync all pools from the since synced block
-    handles.extend(
+    let _permit = TASK_PERMITS.acquire().await.unwrap();
+    aggregated_amms.extend(
         get_new_amms_from_range(
             checkpoint.factories.clone(),
             checkpoint.block_number,
@@ -113,22 +129,22 @@ where
             step,
             provider.clone(),
         )
-        .await,
+        .await?,
     );
 
-    for handle in handles {
-        match handle.await {
-            Ok(sync_result) => aggregated_amms.extend(sync_result?),
-            Err(err) => {
-                {
-                    if err.is_panic() {
-                        // Resume the panic on the main task
-                        resume_unwind(err.into_panic());
-                    }
-                }
-            }
-        }
-    }
+    // for handle in handles {
+    //     match handle.await {
+    //         Ok(sync_result) => aggregated_amms.extend(sync_result?),
+    //         Err(err) => {
+    //             {
+    //                 if err.is_panic() {
+    //                     // Resume the panic on the main task
+    //                     resume_unwind(err.into_panic());
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
 
     //update the sync checkpoint
     construct_checkpoint(
@@ -147,21 +163,20 @@ pub async fn get_new_amms_from_range<T, N, P>(
     to_block: u64,
     step: u64,
     provider: Arc<P>,
-) -> Vec<JoinHandle<Result<Vec<AMM>, AMMError>>>
+) -> Result<Vec<AMM>, AMMError>
 where
     T: Transport + Clone,
     N: Network,
     P: Provider<T, N> + 'static,
 {
-    // Create the filter with all the pair created events
-    // Aggregate the populated pools from each thread
-    let mut handles = vec![];
-
-    for factory in factories.into_iter() {
+    let mut new_amms = vec![];
+    let mut join_set = JoinSet::new();
+    tracing::info!("Getting new AMMs from range {} to {}", from_block, to_block);
+    for factory in factories {
         let provider = provider.clone();
 
         // Spawn a new thread to get all pools and sync data for each dex
-        handles.push(tokio::spawn(async move {
+        join_set.spawn(async move {
             let mut amms = factory
                 .get_all_pools_from_logs(from_block, to_block, step, provider.clone())
                 .await?;
@@ -174,57 +189,90 @@ where
             amms = filters::filter_empty_amms(amms);
 
             Ok::<_, AMMError>(amms)
-        }));
+        });
     }
 
-    handles
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok(result) => match result {
+                Ok(amms) => {
+                    new_amms.extend(amms);
+                }
+                Err(err) => return Err(err),
+            },
+            Err(err) => {
+                return Err(AMMError::JoinError(err));
+            }
+        }
+    }
+
+    Ok(new_amms)
 }
 
-pub async fn batch_sync_amms_from_checkpoint<T, N, P>(
-    mut amms: Vec<AMM>,
-    block_number: Option<u64>,
+pub async fn sync_amm_data_from_checkpoint<T, N, P>(
+    amms: Vec<AMM>,
+    checkpoint_block: u64,
+    to_block: u64,
     provider: Arc<P>,
-) -> JoinHandle<Result<Vec<AMM>, AMMError>>
+) -> Result<Vec<AMM>, AMMError>
 where
     T: Transport + Clone,
     N: Network,
     P: Provider<T, N> + 'static,
 {
-    let factory = match amms[0] {
-        AMM::UniswapV2Pool(_) => Some(Factory::UniswapV2Factory(UniswapV2Factory::new(
-            Address::ZERO,
-            0,
-            0,
-        ))),
+    let multi_progress = MultiProgress::new();
+    let progress = multi_progress.add(init_progress!(
+        amms.len(),
+        "Populating AMM Data from Checkpoint"
+    ));
+    progress.set_position(0);
+    let mut synced_amms = vec![];
+    let mut join_set = JoinSet::new();
 
-        AMM::UniswapV3Pool(_) => Some(Factory::UniswapV3Factory(UniswapV3Factory::new(
-            Address::ZERO,
-            0,
-        ))),
-
-        AMM::ERC4626Vault(_) => None,
-    };
-
-    // Spawn a new thread to get all pools and sync data for each dex
-    tokio::spawn(async move {
-        if let Some(factory) = factory {
-            if amms_are_congruent(&amms) {
-                // Get all pool data via batched calls
-                factory
-                    .populate_amm_data(&mut amms, block_number, provider)
-                    .await?;
-
-                // Clean empty pools
-                amms = filters::filter_empty_amms(amms);
-
-                Ok::<_, AMMError>(amms)
-            } else {
-                Err(AMMError::IncongruentAMMs)
+    for mut amm in amms {
+        let middleware = provider.clone();
+        join_set.spawn(async move {
+            let _permit = TASK_PERMITS.acquire().await.unwrap();
+            match amm {
+                AMM::UniswapV2Pool(ref mut pool) => {
+                    (pool.reserve_0, pool.reserve_1) =
+                        pool.get_reserves(middleware, Some(to_block)).await?;
+                }
+                AMM::UniswapV3Pool(ref mut pool) => {
+                    pool.populate_tick_data(checkpoint_block, middleware.clone())
+                        .await?;
+                    pool.sqrt_price = pool.get_sqrt_price(middleware.clone()).await?;
+                    pool.liquidity = pool.get_liquidity(middleware.clone()).await?;
+                }
+                AMM::ERC4626Vault(ref mut vault) => {
+                    (vault.vault_reserve, vault.asset_reserve) =
+                        vault.get_reserves(middleware, Some(to_block)).await?;
+                }
             }
-        } else {
-            Ok::<_, AMMError>(vec![])
+
+            Ok::<AMM, AMMError>(amm)
+        });
+    }
+
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok(result) => match result {
+                Ok(amm) => {
+                    update_progress_by_one!(progress);
+                    synced_amms.push(amm);
+                }
+                Err(err) => return Err(err),
+            },
+            Err(err) => {
+                tracing::error!(?err);
+                return Err(AMMError::JoinError(err));
+            }
         }
-    })
+    }
+
+    finish_progress!(progress);
+
+    Ok(synced_amms)
 }
 
 pub fn sort_amms(amms: Vec<AMM>) -> (Vec<AMM>, Vec<AMM>, Vec<AMM>) {

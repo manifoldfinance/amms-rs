@@ -104,4 +104,8 @@ pub enum CheckpointError {
     SerdeJsonError(#[from] serde_json::error::Error),
     #[error(transparent)]
     IOError(#[from] std::io::Error),
+    #[error("Error Populating AMM")]
+    ErrorPopulatingAMM,
+    #[error("Join error")]
+    JoinError(#[from] JoinError),
 }
