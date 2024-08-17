@@ -26,7 +26,7 @@ use crate::{
     filters, finish_progress, init_progress, update_progress_by_one,
 };
 
-static TASK_PERMITS: Semaphore = Semaphore::const_new(20);
+static TASK_PERMITS: Semaphore = Semaphore::const_new(100);
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Checkpoint {
@@ -176,7 +176,7 @@ where
     tracing::info!("Getting new AMMs from range {} to {}", from_block, to_block);
     for factory in factories {
         let provider = provider.clone();
-        let permit = TASK_PERMITS.acquire().await.unwrap();
+
         // Spawn a new thread to get all pools and sync data for each dex
         join_set.spawn(async move {
             let mut amms = factory
@@ -189,7 +189,7 @@ where
 
             // Clean empty pools
             amms = filters::filter_empty_amms(amms);
-            drop(permit);
+
             Ok::<_, AMMError>(amms)
         });
     }
