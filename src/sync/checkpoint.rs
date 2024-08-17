@@ -233,7 +233,7 @@ where
 
     for mut amm in amms {
         let middleware = provider.clone();
-        let permit = TASK_PERMITS.acquire().await.unwrap();
+        let _permit = TASK_PERMITS.acquire().await.unwrap();
         join_set.spawn(async move {
             match amm {
                 AMM::UniswapV2Pool(ref mut pool) => {
@@ -251,7 +251,6 @@ where
                         vault.get_reserves(middleware, Some(to_block)).await?;
                 }
             }
-            drop(permit);
             Ok::<AMM, AMMError>(amm)
         });
     }
