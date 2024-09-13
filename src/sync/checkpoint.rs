@@ -73,24 +73,6 @@ where
     //
     tracing::info!("Checkpoint blocknumber: {:?}", checkpoint.block_number);
     tracing::info!("Current blocknumber: {:?}", current_block);
-    // Sort all of the pools from the checkpoint into uniswap_v2_pools and uniswap_v3_pools pools so we can sync them concurrently
-    let (uniswap_v2_pools, uniswap_v3_pools, erc_4626_pools, balancer_v2_pools) =
-        sort_amms(checkpoint.amms);
-
-    let mut aggregated_amms = vec![];
-    let mut handles = vec![];
-
-    // Sync all uniswap v2 pools from checkpoint
-    if !uniswap_v2_pools.is_empty() {
-        handles.push(
-            batch_sync_amms_from_checkpoint(
-                uniswap_v2_pools,
-                Some(current_block),
-                provider.clone(),
-            )
-            .await,
-        );
-    }
 
     let mut aggregated_amms = sync_amm_data_from_checkpoint(
         checkpoint.amms,
@@ -138,14 +120,6 @@ where
     //         This logic needs to be implemented into batch_sync_amms_from_checkpoint"""#
     //     );
     // }
-
-    if !balancer_v2_pools.is_empty() {
-        // TODO: Batch sync erc4626 pools from checkpoint
-        todo!(
-            r#"""This function will produce an incorrect state if Balancer v2 pools are present in the checkpoint. 
-            This logic needs to be implemented into batch_sync_amms_from_checkpoint"""#
-        );
-    }
 
     // Sync all pools from the since synced block
     // let permit = TASK_PERMITS.acquire().await.unwrap();
@@ -255,76 +229,44 @@ where
     ));
     progress.set_position(0);
     let mut synced_amms = vec![];
-    // let mut join_set = JoinSet::new();
+    let mut join_set = JoinSet::new();
 
-    // for mut amm in amms {
-    //     let middleware = provider.clone();
-    //     let _permit = TASK_PERMITS.acquire().await.unwrap();
-    //     join_set.spawn(async move {
-    //         match amm {
-    //             AMM::UniswapV2Pool(ref mut pool) => {
-    //                 (pool.reserve_0, pool.reserve_1) =
-    //                     pool.get_reserves(middleware, Some(to_block)).await?;
-    //             }
-    //             AMM::UniswapV3Pool(ref mut pool) => {
-    //                 pool.populate_tick_data(checkpoint_block, middleware.clone())
-    //                     .await?;
-    //                 pool.sqrt_price = pool.get_sqrt_price(middleware.clone()).await?;
-    //                 pool.liquidity = pool.get_liquidity(middleware.clone()).await?;
-    //             }
-    //             AMM::ERC4626Vault(ref mut vault) => {
-    //                 (vault.vault_reserve, vault.asset_reserve) =
-    //                     vault.get_reserves(middleware, Some(to_block)).await?;
-    //             }
-    //         }
-    //         Ok::<AMM, AMMError>(amm)
-    //     });
-    // }
+    for mut amm in amms {
+        let middleware = provider.clone();
+        let _permit = TASK_PERMITS.acquire().await.unwrap();
+        join_set.spawn(async move {
+            match amm {
+                AMM::UniswapV2Pool(ref mut pool) => {
+                    (pool.reserve_0, pool.reserve_1) =
+                        pool.get_reserves(middleware, Some(to_block)).await?;
+                }
+                AMM::UniswapV3Pool(ref mut pool) => {
+                    pool.populate_tick_data(checkpoint_block, middleware.clone())
+                        .await?;
+                    pool.sqrt_price = pool.get_sqrt_price(middleware.clone()).await?;
+                    pool.liquidity = pool.get_liquidity(middleware.clone()).await?;
+                }
+                AMM::ERC4626Vault(ref mut vault) => {
+                    (vault.vault_reserve, vault.asset_reserve) =
+                        vault.get_reserves(middleware, Some(to_block)).await?;
+                }
+            }
+            Ok::<AMM, AMMError>(amm)
+        });
+    }
 
-    // while let Some(result) = join_set.join_next().await {
-    //     match result {
-    //         Ok(result) => match result {
-    //             Ok(amm) => {
-    //                 update_progress_by_one!(progress);
-    //                 synced_amms.push(amm);
-    //             }
-    //             Err(err) => return Err(err),
-    //         },
-    //         Err(err) => {
-    //             tracing::error!(?err);
-    //             return Err(AMMError::JoinError(err));
-    
-    let factory = match amms[0] {
-        AMM::UniswapV2Pool(_) => Some(Factory::UniswapV2Factory(UniswapV2Factory::new(
-            Address::ZERO,
-            0,
-            0,
-        ))),
-
-        AMM::UniswapV3Pool(_) => Some(Factory::UniswapV3Factory(UniswapV3Factory::new(
-            Address::ZERO,
-            0,
-        ))),
-
-        AMM::ERC4626Vault(_) => None,
-        AMM::BalancerV2Pool(_) => None,
-    };
-
-    // Spawn a new thread to get all pools and sync data for each dex
-    tokio::spawn(async move {
-        if let Some(factory) = factory {
-            if amms_are_congruent(&amms) {
-                // Get all pool data via batched calls
-                factory
-                    .populate_amm_data(&mut amms, block_number, provider)
-                    .await?;
-
-                // Clean empty pools
-                amms = filters::filter_empty_amms(amms);
-
-                Ok::<_, AMMError>(amms)
-            } else {
-                Err(AMMError::IncongruentAMMs)
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok(result) => match result {
+                Ok(amm) => {
+                    update_progress_by_one!(progress);
+                    synced_amms.push(amm);
+                }
+                Err(err) => return Err(err),
+            },
+            Err(err) => {
+                tracing::error!(?err);
+                return Err(AMMError::JoinError(err));
             }
         }
     }
@@ -334,26 +276,19 @@ where
     Ok(synced_amms)
 }
 
-pub fn sort_amms(amms: Vec<AMM>) -> (Vec<AMM>, Vec<AMM>, Vec<AMM>, Vec<AMM>) {
+pub fn sort_amms(amms: Vec<AMM>) -> (Vec<AMM>, Vec<AMM>, Vec<AMM>) {
     let mut uniswap_v2_pools = vec![];
     let mut uniswap_v3_pools = vec![];
     let mut erc_4626_vaults = vec![];
-    let mut balancer_v2_pools = vec![];
     for amm in amms {
         match amm {
             AMM::UniswapV2Pool(_) => uniswap_v2_pools.push(amm),
             AMM::UniswapV3Pool(_) => uniswap_v3_pools.push(amm),
             AMM::ERC4626Vault(_) => erc_4626_vaults.push(amm),
-            AMM::BalancerV2Pool(_) => balancer_v2_pools.push(amm),
         }
     }
 
-    (
-        uniswap_v2_pools,
-        uniswap_v3_pools,
-        erc_4626_vaults,
-        balancer_v2_pools,
-    )
+    (uniswap_v2_pools, uniswap_v3_pools, erc_4626_vaults)
 }
 
 pub async fn get_new_pools_from_range<T, N, P>(
