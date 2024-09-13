@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
 
 use alloy::{
     network::Network,
@@ -19,6 +22,7 @@ use crate::{
 };
 
 use super::{
+    balancer_v2::factory::{BalancerV2Factory, IBFactory},
     uniswap_v2::factory::{IUniswapV2Factory, UniswapV2Factory},
     uniswap_v3::factory::{IUniswapV3Factory, UniswapV3Factory},
     AMM,
@@ -158,10 +162,24 @@ macro_rules! factory {
                 }
             }
         }
+
+        impl Hash for Factory {
+            fn hash<H: Hasher>(&self, state: &mut H) {
+                self.address().hash(state);
+            }
+        }
+
+        impl PartialEq for Factory {
+            fn eq(&self, other: &Self) -> bool {
+                self.address() == other.address()
+            }
+        }
+
+        impl Eq for Factory {}
     };
 }
 
-factory!(UniswapV2Factory, UniswapV3Factory);
+factory!(UniswapV2Factory, UniswapV3Factory, BalancerV2Factory);
 
 impl Factory {
     pub async fn get_all_pools_from_logs<T, N, P>(
@@ -228,6 +246,8 @@ impl TryFrom<B256> for Factory {
             Ok(Factory::UniswapV2Factory(UniswapV2Factory::default()))
         } else if value == IUniswapV3Factory::PoolCreated::SIGNATURE_HASH {
             Ok(Factory::UniswapV3Factory(UniswapV3Factory::default()))
+        } else if value == IBFactory::LOG_NEW_POOL::SIGNATURE_HASH {
+            Ok(Factory::BalancerV2Factory(BalancerV2Factory::default()))
         } else {
             return Err(EventLogError::InvalidEventSignature);
         }
