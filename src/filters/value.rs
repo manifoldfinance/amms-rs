@@ -10,10 +10,7 @@ use alloy::{
 };
 
 use crate::{
-    amm::{
-        factory::{AutomatedMarketMakerFactory, Factory},
-        AutomatedMarketMaker, AMM,
-    },
+    amm::{factory::AutomatedMarketMakerFactory, factory::Factory, AutomatedMarketMaker, AMM},
     errors::AMMError,
 };
 
@@ -38,7 +35,6 @@ pub async fn filter_amms_below_usd_threshold<T, N, P>(
     usd_weth_pool: AMM,
     usd_value_in_pool_threshold: f64, // This is the threshold where we will filter out any pool with less value than this
     weth: Address,
-    usdc: Address,
     weth_value_in_token_to_weth_pool_threshold: U256, //This is the threshold where we will ignore any token price < threshold during batch calls
     step: usize,
     provider: Arc<P>,
@@ -48,7 +44,7 @@ where
     N: Network,
     P: Provider<T, N>,
 {
-    let weth_usd_price = usd_weth_pool.calculate_price(weth, usdc)?;
+    let weth_usd_price = usd_weth_pool.calculate_price(weth)?;
 
     // Init a new vec to hold the filtered AMMs
     let mut filtered_amms = vec![];
@@ -178,7 +174,6 @@ where
         .map(|d| match d {
             Factory::UniswapV2Factory(_) => false,
             Factory::UniswapV3Factory(_) => true,
-            Factory::BalancerV2Factory(_) => false,
         })
         .collect::<Vec<bool>>();
 
