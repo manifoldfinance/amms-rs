@@ -181,6 +181,12 @@ where
                 }
                 finish_progress!(progress);
             }
+
+            AMM::BalancerV2Pool(_) => {
+                for amm in amms {
+                    amm.populate_data(None, provider.clone()).await?;
+                }
+            }
         }
     } else {
         return Err(AMMError::IncongruentAMMs);
