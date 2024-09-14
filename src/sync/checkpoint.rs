@@ -27,7 +27,11 @@ use crate::{
     filters, finish_progress, init_progress, update_progress_by_one,
 };
 
-// static TASK_PERMITS: Semaphore = Semaphore::const_new(100);
+#[derive(Debug)]
+enum ProviderError {
+    GeneralError(String),
+    MaxRetriesExceeded,
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Checkpoint {
@@ -58,6 +62,7 @@ pub async fn sync_amms_from_checkpoint<T, N, P, A>(
     path_to_checkpoint: A,
     step: u64,
     provider: Arc<P>,
+    fallback_provider: Arc<P>,
     max_concurrent_tasks: usize,
     delay_duration: Duration,
 ) -> Result<(Vec<Factory>, Vec<AMM>), AMMError>
@@ -85,6 +90,7 @@ where
         checkpoint.block_number,
         current_block,
         provider.clone(),
+        fallback_provider.clone(),
         semaphore.clone(),
         delay_duration.clone(),
     )
@@ -126,11 +132,11 @@ where
     N: Network,
     P: Provider<T, N> + 'static,
 {
-    let mut new_amms = vec![];
-    let mut join_set = JoinSet::new();
+    let mut new_amms: Vec<AMM> = vec![];
+    let mut join_set: JoinSet<Result<Vec<AMM>, AMMError>> = JoinSet::new();
     tracing::info!("Getting new AMMs from range {} to {}", from_block, to_block);
     for factory in factories {
-        let provider = provider.clone();
+        let provider: Arc<P> = provider.clone();
 
         // Spawn a new thread to get all pools and sync data for each dex
         join_set.spawn(async move {
@@ -171,6 +177,7 @@ pub async fn sync_amm_data_from_checkpoint<T, N, P>(
     checkpoint_block: u64,
     to_block: u64,
     provider: Arc<P>,
+    fallback_provider: Arc<P>,
     semaphore: Arc<Semaphore>,
     delay_duration: Duration,
 ) -> Result<Vec<AMM>, AMMError>
@@ -189,27 +196,38 @@ where
     let mut join_set: JoinSet<Result<AMM, AMMError>> = JoinSet::new();
 
     for mut amm in amms {
-        let middleware: Arc<P> = provider.clone();
+        // let middleware: Arc<P> = provider.clone();
         let semaphore_clone: Arc<Semaphore> = semaphore.clone();
-        let delay = delay_duration;
+        let primary: Arc<P> = provider.clone();
+        let fallback: Arc<P> = fallback_provider.clone();
+        let delay: Duration = delay_duration;
         join_set.spawn(async move {
             // Acquire a permit before proceeding
             let _permit: tokio::sync::SemaphorePermit<'_> =
                 semaphore_clone.acquire().await.unwrap();
-            match amm {
-                AMM::UniswapV2Pool(ref mut pool) => {
-                    (pool.reserve_0, pool.reserve_1) =
-                        pool.get_reserves(middleware, Some(to_block)).await?;
-                }
-                AMM::UniswapV3Pool(ref mut pool) => {
-                    pool.populate_tick_data(checkpoint_block, middleware.clone())
-                        .await?;
-                    pool.sqrt_price = pool.get_sqrt_price(middleware.clone()).await?;
-                    pool.liquidity = pool.get_liquidity(middleware.clone()).await?;
-                }
-                AMM::ERC4626Vault(ref mut vault) => {
-                    (vault.vault_reserve, vault.asset_reserve) =
-                        vault.get_reserves(middleware, Some(to_block)).await?;
+            let mut retries: i32 = 0;
+            let max_retries: i32 = 2; // Retry with both primary and fallback
+
+            while retries < max_retries {
+                let current_provider: Arc<P> = if retries == 0 {
+                    primary.clone()
+                } else {
+                    fallback.clone()
+                };
+                // Attempt to sync using current provider
+                match sync_amm_data(
+                    &mut amm,
+                    checkpoint_block,
+                    to_block,
+                    current_provider.clone(),
+                )
+                .await
+                {
+                    Ok(updated_amm) => return Ok::<AMM, AMMError>(updated_amm),
+                    Err(_) => {
+                        retries += 1;
+                        sleep(delay).await; // Optional: wait before retrying
+                    }
                 }
             }
             // Add a delay before the next task
@@ -252,6 +270,42 @@ pub fn sort_amms(amms: Vec<AMM>) -> (Vec<AMM>, Vec<AMM>, Vec<AMM>) {
     }
 
     (uniswap_v2_pools, uniswap_v3_pools, erc_4626_vaults)
+}
+
+// Helper function to sync AMM data
+async fn sync_amm_data<T, N, P>(
+    amm: &mut AMM,
+    checkpoint_block: u64,
+    to_block: u64,
+    provider: Arc<P>,
+) -> Result<AMM, AMMError>
+where
+    T: Transport + Clone,
+    N: Network,
+    P: Provider<T, N> + 'static,
+{
+    // Perform the actual syncing logic for each AMM
+    match amm {
+        AMM::UniswapV2Pool(ref mut pool) => {
+            (pool.reserve_0, pool.reserve_1) = pool
+                .get_reserves(provider, Some(to_block))
+                .await
+                .map_err(|e| AMMError::PoolDataError)?;
+        }
+        AMM::UniswapV3Pool(ref mut pool) => {
+            pool.populate_tick_data(checkpoint_block, provider.clone())
+                .await?;
+            pool.sqrt_price = pool.get_sqrt_price(provider.clone()).await?;
+            pool.liquidity = pool.get_liquidity(provider.clone()).await?;
+        }
+        AMM::ERC4626Vault(ref mut vault) => {
+            (vault.vault_reserve, vault.asset_reserve) = vault
+                .get_reserves(provider, Some(to_block))
+                .await
+                .map_err(|e| AMMError::PoolDataError)?;
+        }
+    }
+    Ok(amm.clone())
 }
 
 pub async fn get_new_pools_from_range<T, N, P>(

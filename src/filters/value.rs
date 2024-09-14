@@ -258,6 +258,7 @@ mod test {
                 CHECKPOINT_PATH,
                 500,
                 provider.clone(),
+                provider.clone(),
                 10,
                 Duration::from_millis(200),
             )
@@ -269,6 +270,7 @@ mod test {
             tracing::info!("Syncing pools from inception");
             let (markets, _) = sync_amms(
                 factories.clone(),
+                provider.clone(),
                 provider.clone(),
                 Some(CHECKPOINT_PATH),
                 500,
