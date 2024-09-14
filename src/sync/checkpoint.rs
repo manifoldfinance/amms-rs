@@ -3,7 +3,7 @@ use std::{
     panic::resume_unwind,
     path::Path,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use alloy::{network::Network, primitives::Address, providers::Provider, transports::Transport};
@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use tokio::{
     sync::Semaphore,
     task::{JoinHandle, JoinSet},
+    time::sleep,
 };
 
 use crate::{
@@ -26,7 +27,7 @@ use crate::{
     filters, finish_progress, init_progress, update_progress_by_one,
 };
 
-static TASK_PERMITS: Semaphore = Semaphore::const_new(100);
+// static TASK_PERMITS: Semaphore = Semaphore::const_new(100);
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Checkpoint {
@@ -74,55 +75,24 @@ where
     tracing::info!("Checkpoint blocknumber: {:?}", checkpoint.block_number);
     tracing::info!("Current blocknumber: {:?}", current_block);
 
-    let mut aggregated_amms = sync_amm_data_from_checkpoint(
+    // Create a semaphore to limit the number of concurrent tasks
+    let max_concurrent_tasks: usize = 5; // Adjust this value as necessary
+    let semaphore: Arc<Semaphore> = Arc::new(Semaphore::new(max_concurrent_tasks));
+    // Define the desired delay duration, for example 500 milliseconds
+    let delay_duration: Duration = Duration::from_millis(500);
+
+    let mut aggregated_amms: Vec<AMM> = sync_amm_data_from_checkpoint(
         checkpoint.amms,
         checkpoint.block_number,
         current_block,
         provider.clone(),
+        semaphore.clone(),
+        delay_duration.clone(),
     )
     .await?;
     let factories = checkpoint.factories.clone();
 
-    // // Sort all of the pools from the checkpoint into uniswap_v2_pools and uniswap_v3_pools pools so we can sync them concurrently
-    // let (uniswap_v2_pools, uniswap_v3_pools, erc_4626_pools) = sort_amms(checkpoint.amms);
-
-    // let mut aggregated_amms = vec![];
-    // let mut handles = vec![];
-
-    // // Sync all uniswap v2 pools from checkpoint
-    // if !uniswap_v2_pools.is_empty() {
-    //     handles.push(
-    //         batch_sync_amms_from_checkpoint(
-    //             uniswap_v2_pools,
-    //             Some(current_block),
-    //             provider.clone(),
-    //         )
-    //         .await,
-    //     );
-    // }
-
-    // // Sync all uniswap v3 pools from checkpoint
-    // if !uniswap_v3_pools.is_empty() {
-    //     handles.push(
-    //         batch_sync_amms_from_checkpoint(
-    //             uniswap_v3_pools,
-    //             Some(current_block),
-    //             provider.clone(),
-    //         )
-    //         .await,
-    //     );
-    // }
-
-    // if !erc_4626_pools.is_empty() {
-    //     // TODO: Batch sync erc4626 pools from checkpoint
-    //     todo!(
-    //         r#"""This function will produce an incorrect state if ERC4626 pools are present in the checkpoint.
-    //         This logic needs to be implemented into batch_sync_amms_from_checkpoint"""#
-    //     );
-    // }
-
     // Sync all pools from the since synced block
-    // let permit = TASK_PERMITS.acquire().await.unwrap();
     aggregated_amms.extend(
         get_new_amms_from_range(
             factories,
@@ -133,20 +103,6 @@ where
         )
         .await?,
     );
-
-    // for handle in handles {
-    //     match handle.await {
-    //         Ok(sync_result) => aggregated_amms.extend(sync_result?),
-    //         Err(err) => {
-    //             {
-    //                 if err.is_panic() {
-    //                     // Resume the panic on the main task
-    //                     resume_unwind(err.into_panic());
-    //                 }
-    //             }
-    //         }
-    //     }
-    // }
 
     //update the sync checkpoint
     construct_checkpoint(
@@ -216,25 +172,31 @@ pub async fn sync_amm_data_from_checkpoint<T, N, P>(
     checkpoint_block: u64,
     to_block: u64,
     provider: Arc<P>,
+    semaphore: Arc<Semaphore>,
+    delay_duration: Duration,
 ) -> Result<Vec<AMM>, AMMError>
 where
     T: Transport + Clone,
     N: Network,
     P: Provider<T, N> + 'static,
 {
-    let multi_progress = MultiProgress::new();
-    let progress = multi_progress.add(init_progress!(
+    let multi_progress: MultiProgress = MultiProgress::new();
+    let progress: indicatif::ProgressBar = multi_progress.add(init_progress!(
         amms.len(),
         "Populating AMM Data from Checkpoint"
     ));
     progress.set_position(0);
-    let mut synced_amms = vec![];
-    let mut join_set = JoinSet::new();
+    let mut synced_amms: Vec<AMM> = vec![];
+    let mut join_set: JoinSet<Result<AMM, AMMError>> = JoinSet::new();
 
     for mut amm in amms {
-        let middleware = provider.clone();
-        let _permit = TASK_PERMITS.acquire().await.unwrap();
+        let middleware: Arc<P> = provider.clone();
+        let semaphore_clone: Arc<Semaphore> = semaphore.clone();
+        let delay = delay_duration;
         join_set.spawn(async move {
+            // Acquire a permit before proceeding
+            let _permit: tokio::sync::SemaphorePermit<'_> =
+                semaphore_clone.acquire().await.unwrap();
             match amm {
                 AMM::UniswapV2Pool(ref mut pool) => {
                     (pool.reserve_0, pool.reserve_1) =
@@ -251,6 +213,8 @@ where
                         vault.get_reserves(middleware, Some(to_block)).await?;
                 }
             }
+            // Add a delay before the next task
+            sleep(delay).await;
             Ok::<AMM, AMMError>(amm)
         });
     }
