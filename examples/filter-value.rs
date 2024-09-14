@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use alloy::{
     primitives::{address, U256},
@@ -38,8 +38,15 @@ async fn main() -> eyre::Result<()> {
     ];
 
     // Sync pools
-    let (pools, _synced_block) =
-        sync::sync_amms(factories.clone(), provider.clone(), None, 10000).await?;
+    let (pools, _synced_block) = sync::sync_amms(
+        factories.clone(),
+        provider.clone(),
+        None,
+        10000,
+        10,
+        Duration::from_millis(200),
+    )
+    .await?;
 
     // Filter out blacklisted tokens
     let blacklisted_tokens = vec![address!("1f9840a85d5aF5bf1D1762F925BDADdC4201F984")];

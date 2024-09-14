@@ -12,6 +12,7 @@ use crate::{
 };
 use alloy::{network::Network, providers::Provider, transports::Transport};
 use indicatif::MultiProgress;
+use std::time::Duration;
 use std::{panic::resume_unwind, sync::Arc};
 
 /// Syncs all AMMs from the supplied factories.
@@ -26,6 +27,8 @@ pub async fn sync_amms<T, N, P>(
     provider: Arc<P>,
     checkpoint_path: Option<&str>,
     step: u64,
+    max_concurrent_tasks: usize,
+    delay_duration: Duration,
 ) -> Result<(Vec<AMM>, u64), AMMError>
 where
     T: Transport + Clone,
@@ -39,7 +42,14 @@ where
     // read checkpoint file if exists
     if let Some(checkpoint_path) = checkpoint_path {
         if std::fs::File::open(checkpoint_path).is_ok() {
-            let (_, amms) = sync_amms_from_checkpoint(checkpoint_path, step, provider).await?;
+            let (_, amms) = sync_amms_from_checkpoint(
+                checkpoint_path,
+                step,
+                provider,
+                max_concurrent_tasks,
+                delay_duration,
+            )
+            .await?;
             return Ok((amms, current_block));
         }
     }

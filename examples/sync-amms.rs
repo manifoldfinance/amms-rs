@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use alloy::{primitives::address, providers::ProviderBuilder};
 
@@ -39,7 +39,15 @@ async fn main() -> eyre::Result<()> {
     ];
 
     // Sync pairs
-    sync::sync_amms(factories, provider, None, 500).await?;
+    sync::sync_amms(
+        factories,
+        provider,
+        None,
+        500,
+        10,
+        Duration::from_millis(200),
+    )
+    .await?;
 
     Ok(())
 }

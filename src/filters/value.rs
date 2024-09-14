@@ -215,7 +215,7 @@ mod test {
         providers::ProviderBuilder,
         rpc::client::WsConnect,
     };
-    use std::{path::Path, sync::Arc};
+    use std::{path::Path, sync::Arc, time::Duration};
 
     use super::*;
     use crate::amm::{
@@ -254,9 +254,15 @@ mod test {
         // sync all markets
         let markets = if checkpoint_exists {
             tracing::info!("Syncing pools from checkpoint");
-            let (_, markets) = sync_amms_from_checkpoint(CHECKPOINT_PATH, 500, provider.clone())
-                .await
-                .unwrap();
+            let (_, markets) = sync_amms_from_checkpoint(
+                CHECKPOINT_PATH,
+                500,
+                provider.clone(),
+                10,
+                Duration::from_millis(200),
+            )
+            .await
+            .unwrap();
 
             markets
         } else {
@@ -266,6 +272,8 @@ mod test {
                 provider.clone(),
                 Some(CHECKPOINT_PATH),
                 500,
+                10,
+                Duration::from_millis(200),
             )
             .await
             .unwrap();

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use alloy::{primitives::address, providers::ProviderBuilder, rpc::client::WsConnect};
 
@@ -38,8 +38,15 @@ async fn main() -> eyre::Result<()> {
     let step: u64 = 1000;
 
     // Sync amms
-    let (mut amms, last_synced_block) =
-        sync::sync_amms(factories, provider.clone(), None, step).await?;
+    let (mut amms, last_synced_block) = sync::sync_amms(
+        factories,
+        provider.clone(),
+        None,
+        step,
+        10,
+        Duration::from_millis(200),
+    )
+    .await?;
 
     // Discover vaults and add them to amms
     let vaults = discovery::erc_4626::discover_erc_4626_vaults(provider.clone(), step)

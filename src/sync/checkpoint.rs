@@ -58,6 +58,8 @@ pub async fn sync_amms_from_checkpoint<T, N, P, A>(
     path_to_checkpoint: A,
     step: u64,
     provider: Arc<P>,
+    max_concurrent_tasks: usize,
+    delay_duration: Duration,
 ) -> Result<(Vec<Factory>, Vec<AMM>), AMMError>
 where
     T: Transport + Clone,
@@ -76,10 +78,7 @@ where
     tracing::info!("Current blocknumber: {:?}", current_block);
 
     // Create a semaphore to limit the number of concurrent tasks
-    let max_concurrent_tasks: usize = 5; // Adjust this value as necessary
     let semaphore: Arc<Semaphore> = Arc::new(Semaphore::new(max_concurrent_tasks));
-    // Define the desired delay duration, for example 500 milliseconds
-    let delay_duration: Duration = Duration::from_millis(500);
 
     let mut aggregated_amms: Vec<AMM> = sync_amm_data_from_checkpoint(
         checkpoint.amms,
