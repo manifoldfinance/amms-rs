@@ -25,7 +25,6 @@ use std::{panic::resume_unwind, sync::Arc};
 pub async fn sync_amms<T, N, P>(
     factories: Vec<Factory>,
     provider: Arc<P>,
-    fallback_provider: Arc<P>,
     checkpoint_path: Option<&str>,
     step: u64,
     max_concurrent_tasks: usize,
@@ -47,7 +46,6 @@ where
                 checkpoint_path,
                 step,
                 provider,
-                fallback_provider,
                 max_concurrent_tasks,
                 delay_duration,
             )
