@@ -16,7 +16,6 @@ use async_trait::async_trait;
 use futures::{stream::FuturesOrdered, StreamExt};
 use indicatif::MultiProgress;
 use serde::{Deserialize, Serialize};
-use tokio::{sync::Semaphore, task::JoinSet};
 use tracing::instrument;
 
 use crate::{
@@ -26,8 +25,6 @@ use crate::{
 };
 
 use super::{batch_request, IUniswapV3Pool, UniswapV3Pool};
-
-static TASK_PERMITS: Semaphore = Semaphore::const_new(200);
 
 sol! {
     /// Interface of the UniswapV3Factory contract

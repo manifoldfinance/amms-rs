@@ -1,12 +1,11 @@
 use std::{
     fs::read_to_string,
-    panic::resume_unwind,
     path::Path,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use alloy::{network::Network, primitives::Address, providers::Provider, transports::Transport};
+use alloy::{network::Network, providers::Provider, transports::Transport};
 
 use indicatif::MultiProgress;
 use serde::{Deserialize, Serialize};
@@ -19,8 +18,6 @@ use tokio::{
 use crate::{
     amm::{
         factory::{AutomatedMarketMakerFactory, Factory},
-        uniswap_v2::factory::UniswapV2Factory,
-        uniswap_v3::factory::UniswapV3Factory,
         AMM,
     },
     errors::{AMMError, CheckpointError},
