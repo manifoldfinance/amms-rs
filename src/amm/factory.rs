@@ -51,7 +51,7 @@ pub trait AutomatedMarketMakerFactory {
     where
         T: Transport + Clone,
         N: Network,
-        P: Provider<T, N>;
+        P: Provider<T, N> + 'static;
 
     /// Populates all AMMs data via batched static calls.
     async fn populate_amm_data<T, N, P>(
@@ -125,7 +125,7 @@ macro_rules! factory {
             where
                 T: Transport + Clone,
                 N: Network,
-                P: Provider<T, N>,
+                P: Provider<T, N> + 'static,
             {
                 match self {
                     $(Factory::$factory_type(factory) => {

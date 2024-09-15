@@ -15,8 +15,10 @@ use alloy::{
     transports::Transport,
 };
 use async_trait::async_trait;
+use futures::future::join_all;
 use indicatif::MultiProgress;
 use serde::{Deserialize, Serialize};
+use tokio::task::JoinError;
 use tracing::instrument;
 
 use super::{batch_request, UniswapV2Pool, U256_1};
@@ -123,7 +125,7 @@ impl UniswapV2Factory {
     where
         T: Transport + Clone,
         N: Network,
-        P: Provider<T, N>,
+        P: Provider<T, N> + 'static,
     {
         let factory: IUniswapV2Factory::IUniswapV2FactoryInstance<T, Arc<P>, N> =
             IUniswapV2Factory::new(self.address, provider.clone());
@@ -134,20 +136,47 @@ impl UniswapV2Factory {
             multi_progress.add(init_progress!(safe_tokens.clone().len(), "Getting AMMs v2"));
         progress.set_position(0);
 
+        let mut futures: Vec<tokio::task::JoinHandle<Result<Option<AMM>, _>>> = Vec::new();
+
         for (i, token_a) in safe_tokens.iter().enumerate() {
             update_progress_by_one!(progress);
-            for token_b in safe_tokens.iter().skip(i + 1) {
-                let IUniswapV2Factory::getPairReturn { pair: pair_address } =
-                    factory.getPair(*token_a, *token_b).call().await?;
-                if pair_address == address!("0000000000000000000000000000000000000000") {
-                    continue;
-                }
-                let amm: UniswapV2Pool = UniswapV2Pool {
-                    address: pair_address,
-                    ..Default::default()
-                };
 
-                amms.push(AMM::UniswapV2Pool(amm));
+            // Collect async tasks for all pairs
+            for token_b in safe_tokens.iter().skip(i + 1) {
+                let factory_clone = factory.clone();
+                let token_a = *token_a;
+                let token_b = *token_b;
+
+                futures.push(tokio::spawn(async move {
+                    let result = factory_clone.getPair(token_a, token_b).call().await;
+                    match result {
+                        Ok(IUniswapV2Factory::getPairReturn { pair: pair_address })
+                            if pair_address
+                                != address!("0000000000000000000000000000000000000000") =>
+                        {
+                            // Return AMM if valid
+                            Ok(Some(AMM::UniswapV2Pool(UniswapV2Pool {
+                                address: pair_address,
+                                ..Default::default()
+                            })))
+                        }
+                        Ok(_) => Ok(None), // Return None if pair address is invalid
+                        Err(e) => Err(e),  // Propagate any errors
+                    }
+                }));
+            }
+        }
+
+        // Await all tasks concurrently
+        let results: Vec<Result<Result<Option<AMM>, _>, JoinError>> = join_all(futures).await;
+
+        // Process results, flatten the Vec<Option<AMM>>, and handle errors
+        for result in results {
+            match result {
+                Ok(Ok(Some(amm))) => amms.push(amm), // Collect valid AMMs
+                Ok(Ok(None)) => {}                   // Skip None results
+                Ok(Err(e)) => return Err(e.into()),  // Propagate factory call errors
+                Err(join_err) => return Err(join_err.into()), // Handle tokio::spawn errors
             }
         }
 
@@ -217,9 +246,9 @@ impl AutomatedMarketMakerFactory for UniswapV2Factory {
     where
         T: Transport + Clone,
         N: Network,
-        P: Provider<T, N>,
+        P: Provider<T, N> + 'static,
     {
-        self.safe_amms(middleware, safe_tokens).await
+        self.safe_amms(middleware.clone(), safe_tokens).await
     }
 
     async fn populate_amm_data<T, N, P>(
