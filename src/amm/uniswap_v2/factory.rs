@@ -7,7 +7,7 @@ use crate::{
 };
 use alloy::{
     network::Network,
-    primitives::{Address, B256, U256},
+    primitives::{address, Address, B256, U256},
     providers::Provider,
     rpc::types::eth::Log,
     sol,
@@ -114,6 +114,47 @@ impl UniswapV2Factory {
 
         Ok(amms)
     }
+
+    pub async fn safe_amms<T, N, P>(
+        &self,
+        provider: Arc<P>,
+        safe_tokens: Vec<Address>,
+    ) -> Result<Vec<AMM>, AMMError>
+    where
+        T: Transport + Clone,
+        N: Network,
+        P: Provider<T, N>,
+    {
+        let factory: IUniswapV2Factory::IUniswapV2FactoryInstance<T, Arc<P>, N> =
+            IUniswapV2Factory::new(self.address, provider.clone());
+        let mut amms: Vec<AMM> = vec![];
+
+        let multi_progress: MultiProgress = MultiProgress::new();
+        let progress: indicatif::ProgressBar =
+            multi_progress.add(init_progress!(safe_tokens.clone().len(), "Getting AMMs v2"));
+        progress.set_position(0);
+
+        for (i, token_a) in safe_tokens.iter().enumerate() {
+            update_progress_by_one!(progress);
+            for token_b in safe_tokens.iter().skip(i + 1) {
+                let IUniswapV2Factory::getPairReturn { pair: pair_address } =
+                    factory.getPair(*token_a, *token_b).call().await?;
+                if pair_address == address!("0000000000000000000000000000000000000000") {
+                    continue;
+                }
+                let amm: UniswapV2Pool = UniswapV2Pool {
+                    address: pair_address,
+                    ..Default::default()
+                };
+
+                amms.push(AMM::UniswapV2Pool(amm));
+            }
+        }
+
+        finish_progress!(progress);
+
+        Ok(amms)
+    }
 }
 
 #[async_trait]
@@ -166,6 +207,19 @@ impl AutomatedMarketMakerFactory for UniswapV2Factory {
         P: Provider<T, N>,
     {
         self.get_all_pairs_via_batched_calls(middleware).await
+    }
+
+    async fn get_safe_amms<T, N, P>(
+        &self,
+        middleware: Arc<P>,
+        safe_tokens: Vec<Address>,
+    ) -> Result<Vec<AMM>, AMMError>
+    where
+        T: Transport + Clone,
+        N: Network,
+        P: Provider<T, N>,
+    {
+        self.safe_amms(middleware, safe_tokens).await
     }
 
     async fn populate_amm_data<T, N, P>(

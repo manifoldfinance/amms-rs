@@ -43,6 +43,16 @@ pub trait AutomatedMarketMakerFactory {
         N: Network,
         P: Provider<T, N>;
 
+    async fn get_safe_amms<T, N, P>(
+        &self,
+        provider: Arc<P>,
+        safe_tokens: Vec<Address>,
+    ) -> Result<Vec<AMM>, AMMError>
+    where
+        T: Transport + Clone,
+        N: Network,
+        P: Provider<T, N>;
+
     /// Populates all AMMs data via batched static calls.
     async fn populate_amm_data<T, N, P>(
         &self,
@@ -103,6 +113,23 @@ macro_rules! factory {
                 match self {
                     $(Factory::$factory_type(factory) => {
                         factory.get_all_amms(to_block, provider, step).await
+                    },)+
+                }
+            }
+
+            async fn get_safe_amms<T, N, P>(
+                &self,
+                provider: Arc<P>,
+                safe_tokens: Vec<Address>,
+            ) -> Result<Vec<AMM>, AMMError>
+            where
+                T: Transport + Clone,
+                N: Network,
+                P: Provider<T, N>,
+            {
+                match self {
+                    $(Factory::$factory_type(factory) => {
+                        factory.get_safe_amms(provider, safe_tokens).await
                     },)+
                 }
             }

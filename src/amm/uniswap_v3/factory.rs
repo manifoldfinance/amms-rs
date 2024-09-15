@@ -5,7 +5,7 @@ use std::{
 
 use alloy::{
     network::Network,
-    primitives::{Address, B256, U256},
+    primitives::{address, Address, B256, U256},
     providers::Provider,
     rpc::types::eth::{Filter, Log},
     sol,
@@ -96,6 +96,19 @@ impl AutomatedMarketMakerFactory for UniswapV3Factory {
         }
     }
 
+    async fn get_safe_amms<T, N, P>(
+        &self,
+        provider: Arc<P>,
+        safe_tokens: Vec<Address>,
+    ) -> Result<Vec<AMM>, AMMError>
+    where
+        T: Transport + Clone,
+        N: Network,
+        P: Provider<T, N>,
+    {
+        return self.safe_pools(provider, safe_tokens).await;
+    }
+
     #[instrument(skip(self, amms, provider) level = "debug")]
     async fn populate_amm_data<T, N, P>(
         &self,
@@ -159,6 +172,48 @@ impl UniswapV3Factory {
             address,
             creation_block,
         }
+    }
+
+    pub async fn safe_pools<T, N, P>(
+        &self,
+        provider: Arc<P>,
+        safe_tokens: Vec<Address>,
+    ) -> Result<Vec<AMM>, AMMError>
+    where
+        T: Transport + Clone,
+        N: Network,
+        P: Provider<T, N>,
+    {
+        let factory: IUniswapV3Factory::IUniswapV3FactoryInstance<T, Arc<P>, N> =
+            IUniswapV3Factory::new(self.address, provider.clone());
+        let mut amms: Vec<AMM> = vec![];
+
+        let multi_progress: MultiProgress = MultiProgress::new();
+        let progress: indicatif::ProgressBar =
+            multi_progress.add(init_progress!(safe_tokens.clone().len(), "Getting AMMs v2"));
+        progress.set_position(0);
+
+        for (i, token_a) in safe_tokens.iter().enumerate() {
+            update_progress_by_one!(progress);
+            for token_b in safe_tokens.iter().skip(i + 1) {
+                let IUniswapV3Factory::getPoolReturn { pool: pair_address } =
+                    factory.getPool(*token_a, *token_b, 300).call().await?;
+                if pair_address == address!("0000000000000000000000000000000000000000") {
+                    continue;
+                }
+                let amm: UniswapV3Pool = UniswapV3Pool {
+                    address: pair_address,
+                    fee: 300,
+                    ..Default::default()
+                };
+
+                amms.push(AMM::UniswapV3Pool(amm));
+            }
+        }
+
+        finish_progress!(progress);
+
+        Ok(amms)
     }
 
     // Function to get all pair created events for a given Dex factory address and sync pool data

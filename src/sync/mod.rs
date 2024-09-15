@@ -10,6 +10,7 @@ use crate::{
     filters, finish_progress, init_progress,
     sync::checkpoint::sync_amms_from_checkpoint,
 };
+use alloy::primitives::Address;
 use alloy::{network::Network, providers::Provider, transports::Transport};
 use indicatif::MultiProgress;
 use std::time::Duration;
@@ -37,7 +38,7 @@ where
 {
     tracing::info!(?step, ?factories, "Syncing AMMs");
 
-    let current_block = provider.get_block_number().await?;
+    let current_block: u64 = provider.get_block_number().await?;
 
     // read checkpoint file if exists
     if let Some(checkpoint_path) = checkpoint_path {
@@ -112,6 +113,80 @@ where
             current_block,
             checkpoint_path,
         )?;
+    }
+
+    // Return the populated aggregated amms vec
+    Ok((aggregated_amms, current_block))
+}
+
+/// Syncs safe AMMs from the supplied factories.
+///
+/// factories - A vector of factories to sync AMMs from.
+/// provider - A provider to use for syncing AMMs.
+/// safe_tokens - List of safe token addresses
+/// Returns a tuple of the synced AMMs and the last synced block number.
+pub async fn sync_safe_amms<T, N, P>(
+    factories: Vec<Factory>,
+    provider: Arc<P>,
+    safe_tokens: Vec<Address>,
+) -> Result<(Vec<AMM>, u64), AMMError>
+where
+    T: Transport + Clone,
+    N: Network,
+    P: Provider<T, N> + 'static,
+{
+    tracing::info!(?safe_tokens, ?factories, "Syncing AMMs");
+
+    let current_block: u64 = provider.get_block_number().await?;
+
+    // Aggregate the populated pools from each thread
+    let mut aggregated_amms: Vec<AMM> = vec![];
+    let mut handles = vec![];
+
+    // For each dex supplied, get all pair created events and get reserve values
+    for factory in factories.clone() {
+        let provider: Arc<P> = provider.clone();
+        let safe_tokens: Vec<Address> = safe_tokens.clone();
+
+        // Spawn a new thread to get all pools and sync data for each dex
+        handles.push(tokio::spawn(async move {
+            tracing::info!(?factory, "Getting all AMMs from factory");
+            // Get all of the amms from the factory
+            let mut amms: Vec<AMM> = factory
+                .get_safe_amms(provider.clone(), safe_tokens.clone())
+                .await?;
+
+            tracing::info!(?factory, "Populating AMMs from factory");
+            populate_amms(&mut amms, current_block, provider.clone()).await?;
+
+            // Clean empty pools
+            amms = filters::filter_empty_amms(amms);
+
+            // If the factory is UniswapV2, set the fee for each pool according to the factory fee
+            if let Factory::UniswapV2Factory(factory) = factory {
+                for amm in amms.iter_mut() {
+                    if let AMM::UniswapV2Pool(ref mut pool) = amm {
+                        pool.fee = factory.fee;
+                    }
+                }
+            }
+
+            Ok::<_, AMMError>(amms)
+        }));
+    }
+
+    for handle in handles {
+        match handle.await {
+            Ok(sync_result) => aggregated_amms.extend(sync_result?),
+            Err(err) => {
+                {
+                    if err.is_panic() {
+                        // Resume the panic on the main task
+                        resume_unwind(err.into_panic());
+                    }
+                }
+            }
+        }
     }
 
     // Return the populated aggregated amms vec
