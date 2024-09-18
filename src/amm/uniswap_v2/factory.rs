@@ -143,12 +143,15 @@ impl UniswapV2Factory {
 
             // Collect async tasks for all pairs
             for token_b in safe_tokens.iter().skip(i + 1) {
-                let factory_clone = factory.clone();
-                let token_a = *token_a;
-                let token_b = *token_b;
+                let factory_clone: IUniswapV2Factory::IUniswapV2FactoryInstance<T, Arc<P>, N> =
+                    factory.clone();
+                let token_a: Address = *token_a;
+                let token_b: Address = *token_b;
 
                 futures.push(tokio::spawn(async move {
-                    let result = factory_clone.getPair(token_a, token_b).call().await;
+                    sleep(Duration::from_millis(50)).await;
+                    let result: Result<IUniswapV2Factory::getPairReturn, alloy::contract::Error> =
+                        factory_clone.getPair(token_a, token_b).call().await;
                     match result {
                         Ok(IUniswapV2Factory::getPairReturn { pair: pair_address })
                             if pair_address
