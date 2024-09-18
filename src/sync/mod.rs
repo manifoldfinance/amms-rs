@@ -221,7 +221,7 @@ where
         match amms[0] {
             AMM::UniswapV2Pool(_) => {
                 // Max batch size for call
-                let step = 127;
+                let step = 10;
                 let amm_chunks = amms.chunks_mut(step);
                 let progress =
                     multi_progress.add(init_progress!(amm_chunks.len(), "Populating AMM data v2"));
