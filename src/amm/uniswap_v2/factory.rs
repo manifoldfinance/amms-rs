@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use crate::{
     amm::{factory::AutomatedMarketMakerFactory, AMM},
@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use futures::future::join_all;
 use indicatif::MultiProgress;
 use serde::{Deserialize, Serialize};
-use tokio::task::JoinError;
+use tokio::{task::JoinError, time::sleep};
 use tracing::instrument;
 
 use super::{batch_request, UniswapV2Pool, U256_1};
