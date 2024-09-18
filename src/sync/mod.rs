@@ -15,6 +15,7 @@ use alloy::{network::Network, providers::Provider, transports::Transport};
 use indicatif::MultiProgress;
 use std::time::Duration;
 use std::{panic::resume_unwind, sync::Arc};
+use tokio::time::sleep;
 
 /// Syncs all AMMs from the supplied factories.
 ///
@@ -232,6 +233,7 @@ where
                         provider.clone(),
                     )
                     .await?;
+                    sleep(Duration::from_millis(50)).await;
                 }
                 finish_progress!(progress);
             }
@@ -251,6 +253,7 @@ where
                         provider.clone(),
                     )
                     .await?;
+                    sleep(Duration::from_millis(50)).await;
                 }
                 finish_progress!(progress);
             }
@@ -263,6 +266,7 @@ where
                 for amm in amms {
                     update_progress_by_one!(progress);
                     amm.populate_data(None, provider.clone()).await?;
+                    sleep(Duration::from_millis(50)).await;
                 }
                 finish_progress!(progress);
             }
