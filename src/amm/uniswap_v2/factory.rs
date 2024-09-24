@@ -1,5 +1,3 @@
-use std::{sync::Arc, time::Duration};
-
 use crate::{
     amm::{factory::AutomatedMarketMakerFactory, AMM},
     errors::AMMError,
@@ -18,7 +16,10 @@ use async_trait::async_trait;
 use futures::future::join_all;
 use indicatif::MultiProgress;
 use serde::{Deserialize, Serialize};
+use std::{sync::Arc, time::Duration};
 use tokio::{task::JoinError, time::sleep};
+use tokio_retry::strategy::{jitter, ExponentialBackoff};
+use tokio_retry::Retry;
 use tracing::instrument;
 
 use super::{batch_request, UniswapV2Pool, U256_1};
@@ -138,6 +139,8 @@ impl UniswapV2Factory {
 
         let mut futures: Vec<tokio::task::JoinHandle<Result<Option<AMM>, _>>> = Vec::new();
 
+        let retry_strategy = ExponentialBackoff::from_millis(500).map(jitter).take(5);
+
         for (i, token_a) in safe_tokens.iter().enumerate() {
             update_progress_by_one!(progress);
 
@@ -148,10 +151,21 @@ impl UniswapV2Factory {
                 let token_a: Address = *token_a;
                 let token_b: Address = *token_b;
 
+                // Clone retry_strategy here so it is not moved into the async block
+                let retry_strategy = retry_strategy.clone();
+
                 futures.push(tokio::spawn(async move {
-                    sleep(Duration::from_millis(500)).await;
+                    // Rate limit - introduce a delay between each `getPair` call
+                    sleep(Duration::from_millis(500)).await; // 500ms delay
+
+                    // let result: Result<IUniswapV2Factory::getPairReturn, alloy::contract::Error> =
+                    //     factory_clone.getPair(token_a, token_b).call().await;
+                    // Use retry logic for each getPair call
                     let result: Result<IUniswapV2Factory::getPairReturn, alloy::contract::Error> =
-                        factory_clone.getPair(token_a, token_b).call().await;
+                        Retry::spawn(retry_strategy.clone(), || async {
+                            factory_clone.getPair(token_a, token_b).call().await
+                        })
+                        .await;
                     match result {
                         Ok(IUniswapV2Factory::getPairReturn { pair: pair_address })
                             if pair_address

@@ -152,6 +152,10 @@ where
         // Spawn a new thread to get all pools and sync data for each dex
         handles.push(tokio::spawn(async move {
             tracing::info!(?factory, "Getting all AMMs from factory");
+
+            // Rate limit - introduce a delay between factory syncs
+            sleep(Duration::from_secs(1)).await; // 1 second delay
+
             // Get all of the amms from the factory
             let mut amms: Vec<AMM> = factory
                 .get_safe_amms(provider.clone(), safe_tokens.clone())
