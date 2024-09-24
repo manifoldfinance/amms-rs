@@ -149,7 +149,7 @@ impl UniswapV2Factory {
                 let token_b: Address = *token_b;
 
                 futures.push(tokio::spawn(async move {
-                    sleep(Duration::from_millis(50)).await;
+                    sleep(Duration::from_millis(100)).await;
                     let result: Result<IUniswapV2Factory::getPairReturn, alloy::contract::Error> =
                         factory_clone.getPair(token_a, token_b).call().await;
                     match result {
