@@ -35,7 +35,7 @@ pub type StateChangeCache = ArrayDeque<StateChange, 150>;
 
 #[derive(Debug)]
 pub struct StateSpaceManager<T, N, P> {
-    state: Arc<RwLock<StateSpace>>,
+    pub state: Arc<RwLock<StateSpace>>,
     latest_synced_block: u64,
     stream_buffer: usize,
     state_change_buffer: usize,
